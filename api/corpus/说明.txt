@@ -1,0 +1,33 @@
+# 检索式：
+
+Query{}Context(number,WinSize) # 上下文检索
+Query{}Freq(number,WinSize) # 频次检索
+
+## 字段说明：
+Query：检索式
+{}：内为限制语句书写
+number：返回条目数
+WinSize：上下文窗口，默认20
+
+
+# 输出格式：
+##频次格式：
+{
+        "Freq": {"检索对象": 频次},                   
+        "Source": {"检索对象": "来源1:频次  来源2:频次"}
+        "Type": "Freq",     # 检索类型为频次检索
+        "total": int         # 总检索到的条数
+}
+
+##上下文格式
+{
+        "Context": [
+            {
+                "Context": "上文<Q>检索对象</Q>下文",          
+                "Source": "来源_页码/时间戳" 
+				#页码格式实例：Page1；时间戳格式示例：Time_00:01:59,760-00:02:03,119
+            }
+        ],
+        "Type": "Context",	# 检索类型为上下文检索
+        "total": int  	#返回的条数
+    }

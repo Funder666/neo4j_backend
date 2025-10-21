@@ -15,7 +15,7 @@ import json
 import time
 
 # 测试配置
-BASE_URL = "http://localhost:8001"
+BASE_URL = "http://8.153.207.172:5002"
 TEST_TIMEOUT = 30
 
 def test_nl_to_cypher():
@@ -24,7 +24,7 @@ def test_nl_to_cypher():
     print("测试1: 自然语言转Cypher查询接口")
     print("=" * 60)
 
-    url = f"{BASE_URL}/api/intelligent/nl-to-cypher"
+    url = f"{BASE_URL}/out/api/intelligent/nl-to-cypher"
 
     # 测试用例
     test_cases = [
@@ -96,7 +96,7 @@ def test_execute_cypher():
     print("测试2: Cypher查询执行接口")
     print("=" * 60)
 
-    url = f"{BASE_URL}/api/intelligent/execute-cypher"
+    url = f"{BASE_URL}/out/api/intelligent/execute-cypher"
 
     # 测试用例
     test_cases = [

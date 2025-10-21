@@ -54,13 +54,13 @@ app.add_middleware(
 )
 
 # 配置信息
-NEO4J_URI = "bolt://8.153.207.172:7687"
+NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USER = "neo4j"
 NEO4J_PASSWORD = "xtxzhu2u"
 
 # MySQL配置
 MYSQL_CONFIG = {
-    "host": "8.153.207.172",
+    "host": "localhost",
     "user": "root",
     "password": "Restart1128",
     "database": "lab_education",

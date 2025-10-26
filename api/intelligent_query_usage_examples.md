@@ -4,14 +4,61 @@
 
 ## API概览
 
-- **基础URL**: `http://localhost:8000/api/intelligent`
+- **基础URL**: `http://localhost:8000/out/api/intelligent`
+- **认证服务**: `http://localhost:8001/api/auth`
 - **认证方式**: Bearer Token (JWT)
 - **内容类型**: `application/json`
+- **权限控制**: 基于用户角色的节点可见性控制
+
+## 身份认证
+
+### 获取JWT令牌
+
+在使用智能查询API之前，需要先通过Neo4j后端认证服务获取JWT令牌：
+
+```bash
+curl -X POST "http://localhost:8001/api/auth/login" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "username": "admin",
+       "password": "admin123"
+     }'
+```
+
+**响应**:
+```json
+{
+    "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "token_type": "bearer",
+    "expires_in": 86400,
+    "user": {
+        "id": 1,
+        "username": "admin",
+        "role": "admin"
+    }
+}
+```
+
+### 在API请求中使用令牌
+
+获取到令牌后，在所有API请求的Header中添加：
+```http
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+### 权限控制说明
+
+智能查询API实现了基于用户角色的权限控制：
+
+- **admin角色**: 拥有所有权限，可访问所有节点
+- **其他角色**: 只能访问MySQL `user_label_permissions` 表中配置为可见的标签
+- **权限过滤**: API会自动根据用户权限过滤Schema信息和查询结果
+- **安全策略**: 权限不明确时默认拒绝访问
 
 ## 1. 自然语言转Cypher查询接口
 
 ### 端点信息
-- **URL**: `/api/intelligent/nl-to-cypher`
+- **URL**: `/out/api/intelligent/nl-to-cypher`
 - **方法**: POST
 - **功能**: 将自然语言描述转换为Neo4j Cypher查询语句
 
@@ -42,11 +89,24 @@
 }
 ```
 
+**权限过滤响应示例**:
+```json
+{
+    "success": true,
+    "cypher_query": "MATCH (n:Character) WHERE n.hskLevel = '1' RETURN n",
+    "generation_time_ms": 1250,
+    "schema_used": true,
+    "message": "Cypher查询生成成功"
+}
+```
+
+**注意**: Schema信息会根据用户权限自动过滤，只返回用户有权限查看的节点类型。
+
 ### 使用示例
 
 #### 示例1: 基础查询
 ```bash
-curl -X POST "http://localhost:8000/api/intelligent/nl-to-cypher" \
+curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -67,7 +127,7 @@ curl -X POST "http://localhost:8000/api/intelligent/nl-to-cypher" \
 
 #### 示例2: 关系查询
 ```bash
-curl -X POST "http://localhost:8000/api/intelligent/nl-to-cypher" \
+curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -89,7 +149,7 @@ curl -X POST "http://localhost:8000/api/intelligent/nl-to-cypher" \
 
 #### 示例3: 复杂条件查询
 ```bash
-curl -X POST "http://localhost:8000/api/intelligent/nl-to-cypher" \
+curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -111,7 +171,7 @@ curl -X POST "http://localhost:8000/api/intelligent/nl-to-cypher" \
 ## 2. Cypher查询执行接口
 
 ### 端点信息
-- **URL**: `/api/intelligent/execute-cypher`
+- **URL**: `/out/api/intelligent/execute-cypher`
 - **方法**: POST
 - **功能**: 执行Cypher查询语句并返回JSON格式结果
 
@@ -141,11 +201,25 @@ curl -X POST "http://localhost:8000/api/intelligent/nl-to-cypher" \
 }
 ```
 
+**权限过滤响应示例**:
+```json
+{
+    "success": true,
+    "records": [...],
+    "count": 15,
+    "execution_time_ms": 45,
+    "cypher_query": "MATCH (n:Character) WHERE n.hskLevel = '1' RETURN n LIMIT 50",
+    "message": "查询成功，返回 15 条记录 (共查询到 25 条，已按权限过滤)"
+}
+```
+
+**注意**: 查询结果会根据用户权限自动过滤，只返回用户有权限查看的节点和关系。如果存在权限过滤，响应消息会显示原始查询结果数量和过滤后的数量。
+
 ### 使用示例
 
 #### 示例1: 简单查询执行
 ```bash
-curl -X POST "http://localhost:8000/api/intelligent/execute-cypher" \
+curl -X POST "http://localhost:8000/out/api/intelligent/execute-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -173,7 +247,7 @@ curl -X POST "http://localhost:8000/api/intelligent/execute-cypher" \
 
 #### 示例2: 参数化查询
 ```bash
-curl -X POST "http://localhost:8000/api/intelligent/execute-cypher" \
+curl -X POST "http://localhost:8000/out/api/intelligent/execute-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -205,7 +279,7 @@ curl -X POST "http://localhost:8000/api/intelligent/execute-cypher" \
 
 #### 示例3: 关系查询执行
 ```bash
-curl -X POST "http://localhost:8000/api/intelligent/execute-cypher" \
+curl -X POST "http://localhost:8000/out/api/intelligent/execute-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -254,14 +328,14 @@ class IntelligentQueryClient:
 
     def nl_to_cypher(self, query, **kwargs):
         """自然语言转Cypher"""
-        url = f"{self.base_url}/api/intelligent/nl-to-cypher"
+        url = f"{self.base_url}/out/api/intelligent/nl-to-cypher"
         payload = {"query": query, **kwargs}
         response = requests.post(url, json=payload, headers=self.headers)
         return response.json()
 
     def execute_cypher(self, cypher, parameters=None, limit=None):
         """执行Cypher查询"""
-        url = f"{self.base_url}/api/intelligent/execute-cypher"
+        url = f"{self.base_url}/out/api/intelligent/execute-cypher"
         payload = {"cypher": cypher}
         if parameters:
             payload["parameters"] = parameters
@@ -315,7 +389,7 @@ class IntelligentQueryClient {
     }
 
     async nlToCypher(query, options = {}) {
-        const response = await fetch(`${this.baseUrl}/api/intelligent/nl-to-cypher`, {
+        const response = await fetch(`${this.baseUrl}/out/api/intelligent/nl-to-cypher`, {
             method: 'POST',
             headers: this.headers,
             body: JSON.stringify({ query, ...options })
@@ -327,7 +401,7 @@ class IntelligentQueryClient {
         const payload = { cypher, parameters };
         if (limit) payload.limit = limit;
 
-        const response = await fetch(`${this.baseUrl}/api/intelligent/execute-cypher`, {
+        const response = await fetch(`${this.baseUrl}/out/api/intelligent/execute-cypher`, {
             method: 'POST',
             headers: this.headers,
             body: JSON.stringify(payload)
@@ -388,22 +462,33 @@ client.intelligentQuery('查找笔画数少于5的汉字')
 1. **认证错误 (401)**
    - 检查JWT token是否有效
    - 确认token没有过期
+   - 确认用户账户状态为active
 
-2. **参数验证错误 (422)**
+2. **权限错误 (403)**
+   - 检查用户角色是否有相应标签的访问权限
+   - 确认MySQL `user_label_permissions` 表中的权限配置
+   - 联系管理员分配必要的权限
+
+3. **参数验证错误 (422)**
    - 检查请求参数格式和范围
    - 确认必需字段都已提供
 
-3. **AI服务错误 (500)**
+4. **AI服务错误 (500)**
    - AI服务暂时不可用，稍后重试
    - 检查查询是否过于复杂或模糊
 
-4. **数据库查询错误**
+5. **数据库查询错误**
    - 检查生成的Cypher语法是否正确
    - 确认查询的节点和关系在图数据库中存在
 
-5. **安全限制错误**
+6. **安全限制错误**
    - 不允许执行修改数据的操作（CREATE、DELETE等）
    - 调整查询只包含读取操作
+
+7. **权限过滤导致无结果**
+   - 查询的节点标签用户无权限访问
+   - 尝试查询用户有权限的其他标签
+   - 检查权限配置是否正确
 
 ## 5. 性能优化建议
 
@@ -413,10 +498,53 @@ client.intelligentQuery('查找笔画数少于5的汉字')
 4. **批量查询**时考虑并发限制
 5. **监控查询性能**，优化复杂查询语句
 
-## 6. 安全注意事项
+## 6. 健康检查接口
+
+### 端点信息
+- **URL**: `/out/api/health`
+- **方法**: GET
+- **功能**: 检查智能查询API服务的运行状态
+
+### 使用示例
+```bash
+curl -X GET "http://localhost:8000/out/api/health"
+```
+
+### 响应格式
+```json
+{
+    "status": "healthy",
+    "service": "intelligent-query-api",
+    "timestamp": "2024-01-01T12:00:00.000Z",
+    "database_status": {
+        "neo4j": "connected",
+        "mysql": "connected"
+    },
+    "features": {
+        "jwt_authentication": true,
+        "role_based_access_control": true,
+        "permission_filtering": true
+    },
+    "endpoints": [
+        "/out/api/intelligent/nl-to-cypher",
+        "/out/api/intelligent/execute-cypher",
+        "/out/api/health"
+    ]
+}
+```
+
+### 响应字段说明
+- `status`: 服务整体状态 (healthy/unhealthy/error)
+- `database_status`: 数据库连接状态
+- `features`: 功能特性状态
+- `endpoints`: 可用的API端点列表
+
+## 7. 安全注意事项
 
 1. **始终使用HTTPS**进行API调用
 2. **妥善保管JWT token**，不要在客户端暴露
 3. **验证查询结果**，特别是用户输入的自然语言查询
 4. **监控API使用情况**，防止滥用
 5. **定期更新认证信息**和API密钥
+6. **配置适当的权限策略**，遵循最小权限原则
+7. **监控权限过滤效果**，确保权限控制正确实施

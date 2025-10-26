@@ -25,11 +25,11 @@ import time
 import base64
 
 # 测试配置
-BASE_URL = "https://kg.chineseplus.net:80"  # 注意：端口可能需要根据实际部署调整
+BASE_URL = "https://kg.chineseplus.net"  # 注意：端口可能需要根据实际部署调整
 TEST_TIMEOUT = 30
 
 # 测试用户配置（使用智能查询API自带的认证服务）
-AUTH_SERVICE_URL = "https://kg.chineseplus.net:80"  # 智能查询API认证服务
+AUTH_SERVICE_URL = "https://kg.chineseplus.net"  # 智能查询API认证服务
 
 # 测试用户配置 - 与user_neo4j表中的用户对应
 TEST_USERS = {
@@ -293,11 +293,11 @@ def main():
     print(f"测试服务地址: {BASE_URL}")
     print(f"认证服务地址: {AUTH_SERVICE_URL}")
 
-    # 首先检查服务是否运行
-    if not run_test_health_check():
-        print("\n智能查询服务未运行或无法连接，请先启动服务：")
-        print("python intelligent_query_api.py")
-        return
+    # # 首先检查服务是否运行
+    # if not run_test_health_check():
+    #     print("\n智能查询服务未运行或无法连接，请先启动服务：")
+    #     print("python intelligent_query_api.py")
+    #     return
 
     # 获取认证令牌
     global AUTH_TOKEN

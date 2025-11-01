@@ -4,8 +4,8 @@
 
 ## API概览
 
-- **基础URL**: `http://localhost:8000/out/api/intelligent`
-- **认证服务**: `http://localhost:8001/api/auth`
+- **基础URL**: `https://kg.chineseplus.net/out/api/intelligent`
+- **认证服务**: `https://kg.chineseplus.net/out/api/auth`
 - **认证方式**: Bearer Token (JWT)
 - **内容类型**: `application/json`
 - **权限控制**: 基于用户角色的节点可见性控制
@@ -17,15 +17,18 @@
 在使用智能查询API之前，需要先通过Neo4j后端认证服务获取JWT令牌：
 
 ```bash
-curl -X POST "http://localhost:8001/api/auth/login" \
+curl -X POST "https://kg.chineseplus.net/out/api/auth/login" \
      -H "Content-Type: application/json" \
      -d '{
-       "username": "admin",
-       "password": "admin123"
+       "username": "",
+       "password": ""
      }'
 ```
 
+**访客用户登录示例**:
+
 **响应**:
+
 ```json
 {
     "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -33,8 +36,8 @@ curl -X POST "http://localhost:8001/api/auth/login" \
     "expires_in": 86400,
     "user": {
         "id": 1,
-        "username": "admin",
-        "role": "admin"
+        "username": "",
+        "role": ""
     }
 }
 ```
@@ -89,24 +92,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 }
 ```
 
-**权限过滤响应示例**:
-```json
-{
-    "success": true,
-    "cypher_query": "MATCH (n:Character) WHERE n.hskLevel = '1' RETURN n",
-    "generation_time_ms": 1250,
-    "schema_used": true,
-    "message": "Cypher查询生成成功"
-}
-```
-
 **注意**: Schema信息会根据用户权限自动过滤，只返回用户有权限查看的节点类型。
 
 ### 使用示例
 
 #### 示例1: 基础查询
 ```bash
-curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
+curl -X POST "https://kg.chineseplus.net/out/api/intelligent/nl-to-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -127,7 +119,7 @@ curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
 
 #### 示例2: 关系查询
 ```bash
-curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
+curl -X POST "https://kg.chineseplus.net/out/api/intelligent/nl-to-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -149,7 +141,7 @@ curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
 
 #### 示例3: 复杂条件查询
 ```bash
-curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
+curl -X POST "https://kg.chineseplus.net/out/api/intelligent/nl-to-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -219,7 +211,7 @@ curl -X POST "http://localhost:8000/out/api/intelligent/nl-to-cypher" \
 
 #### 示例1: 简单查询执行
 ```bash
-curl -X POST "http://localhost:8000/out/api/intelligent/execute-cypher" \
+curl -X POST "https://kg.chineseplus.net/out/api/intelligent/execute-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -247,7 +239,7 @@ curl -X POST "http://localhost:8000/out/api/intelligent/execute-cypher" \
 
 #### 示例2: 参数化查询
 ```bash
-curl -X POST "http://localhost:8000/out/api/intelligent/execute-cypher" \
+curl -X POST "https://kg.chineseplus.net/out/api/intelligent/execute-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -279,7 +271,7 @@ curl -X POST "http://localhost:8000/out/api/intelligent/execute-cypher" \
 
 #### 示例3: 关系查询执行
 ```bash
-curl -X POST "http://localhost:8000/out/api/intelligent/execute-cypher" \
+curl -X POST "https://kg.chineseplus.net/out/api/intelligent/execute-cypher" \
      -H "Authorization: Bearer YOUR_JWT_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -367,7 +359,7 @@ class IntelligentQueryClient:
         }
 
 # 使用示例
-client = IntelligentQueryClient("http://localhost:8000", "your_jwt_token")
+client = IntelligentQueryClient("https://kg.chineseplus.net", "your_jwt_token")
 
 # 完整智能查询
 result = client.intelligent_query("找到所有HSK等级为1的汉字")
@@ -431,7 +423,7 @@ class IntelligentQueryClient {
 }
 
 // 使用示例
-const client = new IntelligentQueryClient('http://localhost:8000', 'your_jwt_token');
+const client = new IntelligentQueryClient('https://kg.chineseplus.net', 'your_jwt_token');
 
 // 智能查询
 client.intelligentQuery('查找笔画数少于5的汉字')
@@ -507,7 +499,7 @@ client.intelligentQuery('查找笔画数少于5的汉字')
 
 ### 使用示例
 ```bash
-curl -X GET "http://localhost:8000/out/api/health"
+curl -X GET "https://kg.chineseplus.net/out/api/health"
 ```
 
 ### 响应格式

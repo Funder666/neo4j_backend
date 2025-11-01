@@ -16,7 +16,7 @@
 - 测试文件使用明文密码，API内置验证
 - admin用户明文密码: "admin2025."
 - guest用户明文密码: "guest"
-- 认证服务地址: http://localhost:8000/out/api/auth/login
+- 认证服务地址: https://kg.chineseplus.net/out/api/auth/login
 """
 
 import requests
@@ -46,7 +46,7 @@ TEST_USERS = {
 }
 
 # 默认使用admin用户进行测试
-TEST_USER = TEST_USERS["admin"]
+TEST_USER = TEST_USERS["user"]
 
 def get_auth_token():
     """获取JWT认证令牌"""

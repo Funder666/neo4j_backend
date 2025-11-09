@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1072,23 +1073,35 @@ async def run_custom_query(
         from concurrent.futures import TimeoutError
 
         with db_service.get_neo4j_session() as session:
-            # 记录查询日志
-            logger.info(f"用户 {current_user['username']} 执行Cypher查询: {query_request.cypher}")
+            # 简单直接的查询语句清理
+            original_query = query_request.cypher
+
+            # 直接将所有换行符替换为空格
+            cleaned_query = original_query.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+            # 去除多余空格
+            cleaned_query = ' '.join(cleaned_query.split())
 
             # 检查查询是否包含LIMIT，如果没有则警告并自动添加
-            cypher_query = query_request.cypher.strip().upper()
-            if not cypher_query.endswith('LIMIT') and ' LIMIT ' not in cypher_query:
-                logger.warning(f"查询未包含LIMIT限制，可能影响性能: {query_request.cypher}")
+            cypher_query_upper = cleaned_query.strip().upper()
+
+            # 使用正则表达式检查是否已经有完整的LIMIT子句
+            limit_pattern = r'\bLIMIT\s+\d+\s*$'
+            has_limit = re.search(limit_pattern, cleaned_query, re.IGNORECASE)
+
+            if not has_limit and 'RETURN' in cypher_query_upper:
+                logger.warning(f"查询未包含LIMIT限制，可能影响性能: {cleaned_query}")
                 # 为没有LIMIT的查询自动添加合理的限制
-                if 'RETURN' in cypher_query:
-                    # 提取RETURN子句后的内容
-                    return_part = query_request.cypher.split('RETURN', 1)[1]
-                    if not return_part.strip().upper().startswith('LIMIT'):
-                        modified_query = query_request.cypher + ' LIMIT 1000'
-                        logger.info(f"为查询自动添加LIMIT 1000: {modified_query}")
-                        query_request.cypher = modified_query
+                modified_query = cleaned_query + ' LIMIT 1000'
+                logger.info(f"为查询自动添加LIMIT 1000: {modified_query}")
+                final_query = modified_query
+            else:
+                final_query = cleaned_query
+                logger.info(f"使用清理后的查询: {final_query}")
 
             params = convert_neo4j_integers(query_request.parameters)
+
+            # 确保使用处理后的查询
+            query_request.cypher = final_query
 
             # 使用异步方式执行查询，设置10秒超时
             def run_query():

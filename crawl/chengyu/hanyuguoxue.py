@@ -1,6 +1,24 @@
 # -*- coding: utf-8 -*-
 import requests
 import urllib.parse
+from neo4j import GraphDatabase
+
+neo4j_config = {
+    "uri": "bolt://8.153.207.172:7687",
+    "user": "neo4j",
+    "password": "xtxzhu2u"
+}
+
+def get_idioms_from_neo4j(limit=2):
+    driver = GraphDatabase.driver(neo4j_config["uri"], auth=(neo4j_config["user"], neo4j_config["password"]))
+    idiom_list = []
+    with driver.session() as session:
+        query = f"MATCH (n:Idiom) RETURN n.name AS name LIMIT {limit}"
+        result = session.run(query)
+        for record in result:
+            idiom_list.append(record["name"])
+    driver.close()
+    return idiom_list
 
 
 def get_chengyu_url(chengyu):
@@ -26,11 +44,7 @@ def test_chengyu_crawl():
     """
     测试成语URL获取功能
     """
-    test_chengyu_list = [
-        "一心一意",
-        "画龙点睛",
-        "守株待兔"
-    ]
+    test_chengyu_list = get_idioms_from_neo4j(limit=2)
 
     for chengyu in test_chengyu_list:
         url = get_chengyu_url(chengyu)

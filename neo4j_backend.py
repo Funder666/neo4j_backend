@@ -470,7 +470,7 @@ async def get_nodes(
     limit: int = Query(50, description="返回数量限制"),
     label: Optional[str] = Query(None, description="节点标签过滤"),
     skip: int = Query(0, description="跳过数量"),
-    mode: Optional[str] = Query(None, description="查询模式: general 或 new-standard"),
+    mode: Optional[str] = Query(None, description="查询模式: general、new-standard、hsk-2.0 或 hsk-3.0"),
     current_user: dict = Depends(get_current_user)
 ):
     """获取节点列表"""
@@ -482,6 +482,32 @@ async def get_nodes(
                 if label in ['Character', 'Word', 'Grammar', 'Cultural', 'Question', 'Idiom', 'Pinyin']:
                     query = f"""
                     MATCH (n:{label})-[:FROM_LEVEL]->(i:InternationalLevel)
+                    RETURN n, labels(n) as labels
+                    ORDER BY id(n)
+                    SKIP $skip
+                    LIMIT $limit
+                    """
+                else:
+                    # 其他类型节点正常查询
+                    query = f"MATCH (n:{label}) RETURN n, labels(n) as labels ORDER BY id(n) SKIP $skip LIMIT $limit"
+            elif mode == 'hsk-2.0' and label:
+                # HSK2.0模式：只返回与HSKLevel有FROM_LEVEL关系的节点
+                if label in ['Character', 'Word', 'Grammar', 'Cultural', 'Question', 'Idiom', 'Pinyin']:
+                    query = f"""
+                    MATCH (n:{label})-[:FROM_LEVEL]->(i:HSKLevel)
+                    RETURN n, labels(n) as labels
+                    ORDER BY id(n)
+                    SKIP $skip
+                    LIMIT $limit
+                    """
+                else:
+                    # 其他类型节点正常查询
+                    query = f"MATCH (n:{label}) RETURN n, labels(n) as labels ORDER BY id(n) SKIP $skip LIMIT $limit"
+            elif mode == 'hsk-3.0' and label:
+                # HSK3.0模式：只返回与HSK30Level有FROM_LEVEL关系的节点
+                if label in ['Character', 'Word', 'Grammar', 'Cultural', 'Question', 'Idiom', 'Pinyin']:
+                    query = f"""
+                    MATCH (n:{label})-[:FROM_LEVEL]->(i:HSK30Level)
                     RETURN n, labels(n) as labels
                     ORDER BY id(n)
                     SKIP $skip
@@ -532,6 +558,78 @@ async def search_nodes(
                     else:
                         query = f"""
                         MATCH (n:{search_request.label})-[:FROM_LEVEL]->(i:InternationalLevel)
+                        WHERE (n.name CONTAINS $text OR n.value CONTAINS $text OR toString(n.name) CONTAINS $text OR toString(n.value) CONTAINS $text)
+                        RETURN n, labels(n) as labels
+                        LIMIT $limit
+                        """
+                else:
+                    # 其他类型节点正常搜索
+                    if search_request.label == 'Pinyin' or search_request.label == 'Syllable':
+                        query = f"""
+                        MATCH (n:{search_request.label})
+                        WHERE (n.name STARTS WITH $text OR n.value STARTS WITH $text OR n.normal_pinyin STARTS WITH $text
+                               OR toString(n.name) STARTS WITH $text OR toString(n.value) STARTS WITH $text OR toString(n.normal_pinyin) STARTS WITH $text)
+                        RETURN n, labels(n) as labels
+                        LIMIT $limit
+                        """
+                    else:
+                        query = f"""
+                        MATCH (n:{search_request.label})
+                        WHERE (n.name CONTAINS $text OR n.value CONTAINS $text OR toString(n.name) CONTAINS $text OR toString(n.value) CONTAINS $text)
+                        RETURN n, labels(n) as labels
+                        LIMIT $limit
+                        """
+            elif search_request.mode == 'hsk-2.0' and search_request.label:
+                # HSK2.0模式：只搜索与HSKLevel有FROM_LEVEL关系的节点
+                if search_request.label in ['Character', 'Word', 'Grammar', 'Cultural', 'Question', 'Idiom','Pinyin']:
+                    # 拼音节点特殊处理,增加 normal_pinyin 字段搜索
+                    if search_request.label == 'Pinyin' or search_request.label == 'Syllable':
+                        query = f"""
+                        MATCH (n:{search_request.label})-[:FROM_LEVEL]->(i:HSKLevel)
+                        WHERE (n.name STARTS WITH $text OR n.value STARTS WITH $text OR n.normal_pinyin STARTS WITH $text
+                               OR toString(n.name) STARTS WITH $text OR toString(n.value) STARTS WITH $text OR toString(n.normal_pinyin) STARTS WITH $text)
+                        RETURN n, labels(n) as labels
+                        LIMIT $limit
+                        """
+                    else:
+                        query = f"""
+                        MATCH (n:{search_request.label})-[:FROM_LEVEL]->(i:HSKLevel)
+                        WHERE (n.name CONTAINS $text OR n.value CONTAINS $text OR toString(n.name) CONTAINS $text OR toString(n.value) CONTAINS $text)
+                        RETURN n, labels(n) as labels
+                        LIMIT $limit
+                        """
+                else:
+                    # 其他类型节点正常搜索
+                    if search_request.label == 'Pinyin' or search_request.label == 'Syllable':
+                        query = f"""
+                        MATCH (n:{search_request.label})
+                        WHERE (n.name STARTS WITH $text OR n.value STARTS WITH $text OR n.normal_pinyin STARTS WITH $text
+                               OR toString(n.name) STARTS WITH $text OR toString(n.value) STARTS WITH $text OR toString(n.normal_pinyin) STARTS WITH $text)
+                        RETURN n, labels(n) as labels
+                        LIMIT $limit
+                        """
+                    else:
+                        query = f"""
+                        MATCH (n:{search_request.label})
+                        WHERE (n.name CONTAINS $text OR n.value CONTAINS $text OR toString(n.name) CONTAINS $text OR toString(n.value) CONTAINS $text)
+                        RETURN n, labels(n) as labels
+                        LIMIT $limit
+                        """
+            elif search_request.mode == 'hsk-3.0' and search_request.label:
+                # HSK3.0模式：只搜索与HSK30Level有FROM_LEVEL关系的节点
+                if search_request.label in ['Character', 'Word', 'Grammar', 'Cultural', 'Question', 'Idiom','Pinyin']:
+                    # 拼音节点特殊处理,增加 normal_pinyin 字段搜索
+                    if search_request.label == 'Pinyin' or search_request.label == 'Syllable':
+                        query = f"""
+                        MATCH (n:{search_request.label})-[:FROM_LEVEL]->(i:HSK30Level)
+                        WHERE (n.name STARTS WITH $text OR n.value STARTS WITH $text OR n.normal_pinyin STARTS WITH $text
+                               OR toString(n.name) STARTS WITH $text OR toString(n.value) STARTS WITH $text OR toString(n.normal_pinyin) STARTS WITH $text)
+                        RETURN n, labels(n) as labels
+                        LIMIT $limit
+                        """
+                    else:
+                        query = f"""
+                        MATCH (n:{search_request.label})-[:FROM_LEVEL]->(i:HSK30Level)
                         WHERE (n.name CONTAINS $text OR n.value CONTAINS $text OR toString(n.name) CONTAINS $text OR toString(n.value) CONTAINS $text)
                         RETURN n, labels(n) as labels
                         LIMIT $limit
@@ -977,7 +1075,7 @@ async def get_all_labels(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/relationship-types")
 async def get_relationship_types(
-    mode: Optional[str] = Query(None, description="查询模式: general 或 new-standard"),
+    mode: Optional[str] = Query(None, description="查询模式: general、new-standard、hsk-2.0 或 hsk-3.0"),
     current_user: dict = Depends(get_current_user)
 ):
     """获取所有关系类型"""
@@ -992,6 +1090,36 @@ async def get_relationship_types(
                 WHERE EXISTS((n)-[:FROM_LEVEL]->(:InternationalLevel))
                   AND (EXISTS((m)-[:FROM_LEVEL]->(:InternationalLevel))
                        OR m:InternationalLevel
+                       OR m:CulturalStage
+                       OR m:CulturalLevel1
+                       OR m:CulturalLevel2)
+                RETURN type(r) as type, count(r) as count
+                ORDER BY count DESC
+                """
+            elif mode == 'hsk-2.0':
+                # HSK2.0模式：
+                # 起始节点必须与HSKLevel有FROM_LEVEL关系
+                # 并且终止节点要么与HSKLevel有FROM_LEVEL关系,要么是特定等级节点
+                query = """
+                MATCH (n)-[r]->(m)
+                WHERE EXISTS((n)-[:FROM_LEVEL]->(:HSKLevel))
+                  AND (EXISTS((m)-[:FROM_LEVEL]->(:HSKLevel))
+                       OR m:HSKLevel
+                       OR m:CulturalStage
+                       OR m:CulturalLevel1
+                       OR m:CulturalLevel2)
+                RETURN type(r) as type, count(r) as count
+                ORDER BY count DESC
+                """
+            elif mode == 'hsk-3.0':
+                # HSK3.0模式：
+                # 起始节点必须与HSK30Level有FROM_LEVEL关系
+                # 并且终止节点要么与HSK30Level有FROM_LEVEL关系,要么是特定等级节点
+                query = """
+                MATCH (n)-[r]->(m)
+                WHERE EXISTS((n)-[:FROM_LEVEL]->(:HSK30Level))
+                  AND (EXISTS((m)-[:FROM_LEVEL]->(:HSK30Level))
+                       OR m:HSK30Level
                        OR m:CulturalStage
                        OR m:CulturalLevel1
                        OR m:CulturalLevel2)
@@ -1018,7 +1146,7 @@ async def get_relationship_types(
 
 @app.get("/api/node-types")
 async def get_node_types(
-    mode: Optional[str] = Query(None, description="查询模式: general 或 new-standard"),
+    mode: Optional[str] = Query(None, description="查询模式: general、new-standard、hsk-2.0 或 hsk-3.0"),
     current_user: dict = Depends(get_current_user)
 ):
     """获取所有节点标签及其数量"""
@@ -1039,6 +1167,44 @@ async def get_node_types(
                 UNWIND labels(n) AS label
                 WITH label, count(n) as count
                 WHERE label IN ['Radical', 'CulturalStage', 'CulturalLevel1', 'CulturalLevel2', 'InternationalLevel', 'Error']
+                RETURN label, count
+
+                ORDER BY count DESC
+                """
+            elif mode == 'hsk-2.0':
+                # HSK2.0模式：分别统计有FROM_LEVEL关系的节点和其他相关节点
+                query = """
+                MATCH (n)-[:FROM_LEVEL]->(i:HSKLevel)
+                UNWIND labels(n) AS label
+                WITH label, count(n) as count
+                WHERE label IN ['Character', 'Word', 'Grammar', 'Cultural', 'Question', 'Idiom', 'Pinyin']
+                RETURN label, count
+
+                UNION ALL
+
+                MATCH (n)
+                UNWIND labels(n) AS label
+                WITH label, count(n) as count
+                WHERE label IN ['Radical', 'CulturalStage', 'CulturalLevel1', 'CulturalLevel2', 'HSKLevel', 'Error']
+                RETURN label, count
+
+                ORDER BY count DESC
+                """
+            elif mode == 'hsk-3.0':
+                # HSK3.0模式：分别统计有FROM_LEVEL关系的节点和其他相关节点
+                query = """
+                MATCH (n)-[:FROM_LEVEL]->(i:HSK30Level)
+                UNWIND labels(n) AS label
+                WITH label, count(n) as count
+                WHERE label IN ['Character', 'Word', 'Grammar', 'Cultural', 'Question', 'Idiom', 'Pinyin']
+                RETURN label, count
+
+                UNION ALL
+
+                MATCH (n)
+                UNWIND labels(n) AS label
+                WITH label, count(n) as count
+                WHERE label IN ['Radical', 'CulturalStage', 'CulturalLevel1', 'CulturalLevel2', 'HSK30Level', 'Error']
                 RETURN label, count
 
                 ORDER BY count DESC

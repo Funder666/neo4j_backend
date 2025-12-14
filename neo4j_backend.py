@@ -1012,6 +1012,99 @@ async def get_node_relationships(
         logger.error(f"获取节点关系失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取节点关系失败: {str(e)}")
 
+@app.get("/api/nodes/{node_id}/multi-hop")
+async def get_multi_hop_nodes(
+    node_id: int,
+    hops: int = Query(2, ge=1, le=3, description="跳数：1-3跳"),
+    limit: int = Query(10, ge=1, le=50, description="返回节点数量限制"),
+    current_user: dict = Depends(get_current_user)
+):
+    """获取与指定节点多跳相关的节点"""
+    try:
+        with db_service.get_neo4j_session() as session:
+            # 首先检查节点是否存在
+            check_query = """
+            MATCH (n) WHERE id(n) = $node_id
+            RETURN n, labels(n) as node_labels
+            """
+            params = convert_neo4j_integers({"node_id": node_id, "hops": hops, "limit": limit})
+            check_result = session.run(check_query, params)
+            check_record = check_result.single()
+
+            if not check_record:
+                raise HTTPException(status_code=404, detail="节点未找到")
+
+            # 使用APOC或原生Cypher实现多跳查询
+            # 这里使用原生Cypher实现，避免依赖APOC
+            multi_hop_query = f"""
+            MATCH (start_node) WHERE id(start_node) = $node_id
+            MATCH (start_node)-[*1..{hops}]-(end_node)
+            WHERE id(start_node) <> id(end_node)  // 排除起始节点本身
+
+            WITH DISTINCT end_node as node, start_node
+            ORDER BY rand()  // 随机排序
+            LIMIT $limit
+
+            MATCH path = (start_node)-[*1..{hops}]-(node)
+            WHERE id(start_node) <> id(node)
+
+            RETURN
+                node as target_node,
+                labels(node) as target_labels,
+                path,
+                length(path) as hop_distance,
+                [rel in relationships(path) | type(rel)] as relationship_types
+            ORDER BY hop_distance  // 优先显示近的节点
+            """
+
+            result = session.run(multi_hop_query, params)
+
+            multi_hop_data = []
+            processed_nodes = set()  # 用于去重
+
+            for record in result:
+                target_node = record["target_node"]
+                node_id_val = target_node.id
+
+                # 避免重复节点
+                if node_id_val in processed_nodes:
+                    continue
+                processed_nodes.add(node_id_val)
+
+                # 转换节点数据
+                node_data = {
+                    'id': node_id_val,
+                    'labels': list(record["target_labels"]),
+                    'properties': dict(target_node),
+                    'hop_distance': record["hop_distance"],
+                    'relationship_types': record["relationship_types"],
+                    'path': record_to_dict(record)["path"] if "path" in record_to_dict(record) else None
+                }
+
+                multi_hop_data.append(node_data)
+
+            # 获取起始节点信息
+            start_record = check_record["n"]
+            start_node_data = {
+                "id": start_record.id,
+                "labels": list(start_record.labels),
+                "properties": dict(start_record)
+            }
+
+            return {
+                "start_node": start_node_data,
+                "multi_hop_nodes": multi_hop_data,
+                "count": len(multi_hop_data),
+                "hops": hops,
+                "limit": limit
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取多跳节点失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取多跳节点失败: {str(e)}")
+
 # 图数据API
 @app.get("/api/graph")
 async def get_graph_data(

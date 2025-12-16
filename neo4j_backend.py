@@ -182,6 +182,73 @@ class Token(BaseModel):
     expires_in: int
     user: UserResponse
 
+# 用户管理相关模型
+class UserManagementCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
+    role: Optional[str] = "user"
+    department: Optional[str] = None
+    position: Optional[str] = None
+    phone: Optional[str] = None
+
+class UserManagementUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    department: Optional[str] = None
+    position: Optional[str] = None
+    phone: Optional[str] = None
+    status: Optional[str] = None
+
+# 标签映射相关模型
+class LabelMappingCreate(BaseModel):
+    type: str  # 'node' or 'relationship'
+    neo4j_name: str
+    display_name: str
+    description: Optional[str] = None
+    sort_order: Optional[int] = 0
+    is_active: Optional[bool] = True
+
+class LabelMappingUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+# 用户标签权限相关模型
+class UserLabelPermissionCreate(BaseModel):
+    user_role: str
+    label_mapping_id: int
+    can_view: Optional[bool] = True
+    can_create: Optional[bool] = False
+    can_edit: Optional[bool] = False
+    can_delete: Optional[bool] = False
+
+class UserLabelPermissionUpdate(BaseModel):
+    can_view: Optional[bool] = None
+    can_create: Optional[bool] = None
+    can_edit: Optional[bool] = None
+    can_delete: Optional[bool] = None
+
+# 标签属性相关模型
+class LabelPropertyCreate(BaseModel):
+    label_mapping_id: int
+    property_key: str
+    display_name: str
+    description: Optional[str] = None
+    data_type: Optional[str] = 'string'
+    sort_order: Optional[int] = 0
+    is_display: Optional[bool] = True
+
+class LabelPropertyUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    data_type: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_display: Optional[bool] = None
+
 # 数据库连接服务
 class DatabaseService:
     def __init__(self):
@@ -1128,7 +1195,7 @@ async def get_graph_data(
         raise HTTPException(status_code=500, detail=f"获取图数据失败: {str(e)}")
 
 # 元数据API
-@app.get("/api/labels")
+@app.get("/api/labels/neo4j")
 async def get_all_labels(current_user: dict = Depends(get_current_user)):
     """获取所有标签（兼容接口，支持返回数量）"""
     try:
@@ -1480,36 +1547,65 @@ async def get_label_mappings(
     try:
         conn = db_service.get_mysql_connection()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            # 查询用户角色可见的标签映射
+            # 首先查询所有激活的标签映射
             sql = """
-            SELECT 
-                lm.id, lm.type, lm.neo4j_name, lm.display_name, 
-                lm.description, lm.sort_order,
-                ulp.can_view, ulp.can_create, ulp.can_edit, ulp.can_delete
+            SELECT
+                lm.id, lm.type, lm.neo4j_name, lm.display_name,
+                lm.description, lm.sort_order
             FROM label_mappings lm
-            LEFT JOIN user_label_permissions ulp ON lm.id = ulp.label_mapping_id 
-            WHERE lm.is_active = TRUE 
-                AND ulp.user_role = %s 
-                AND ulp.can_view = TRUE
+            WHERE lm.is_active = TRUE
             """
-            params = [current_user['role']]
-            
+            params = []
+
             if type:
                 sql += " AND lm.type = %s"
                 params.append(type)
-                
+
             sql += " ORDER BY lm.sort_order, lm.display_name"
-            
+
             cursor.execute(sql, params)
             mappings = cursor.fetchall()
-            
+
+            # 查询用户的权限配置
+            if mappings:
+                label_ids = [m['id'] for m in mappings]
+                placeholders = ','.join(['%s'] * len(label_ids))
+
+                permission_sql = f"""
+                SELECT label_mapping_id, can_view, can_create, can_edit, can_delete
+                FROM user_label_permissions
+                WHERE user_role = %s AND label_mapping_id IN ({placeholders})
+                """
+                permission_params = [current_user['role']] + label_ids
+
+                cursor.execute(permission_sql, permission_params)
+                permissions = cursor.fetchall()
+
+                # 创建权限映射字典
+                permission_map = {}
+                for p in permissions:
+                    permission_map[p['label_mapping_id']] = {
+                        'can_view': bool(p['can_view']),
+                        'can_create': bool(p['can_create']),
+                        'can_edit': bool(p['can_edit']),
+                        'can_delete': bool(p['can_delete'])
+                    }
+
             # 转换为字典，按类型分组
             result = {
                 'node_labels': [],
                 'relationship_labels': []
             }
-            
+
             for mapping in mappings:
+                # 获取权限，如果没有配置权限，管理员默认有所有权限，其他用户默认有查看权限
+                permission = permission_map.get(mapping['id'], {
+                    'can_view': True,
+                    'can_create': current_user['role'] == 'admin',
+                    'can_edit': current_user['role'] == 'admin',
+                    'can_delete': current_user['role'] == 'admin'
+                })
+
                 target_list = 'node_labels' if mapping['type'] == 'node' else 'relationship_labels'
                 result[target_list].append({
                     'id': mapping['id'],
@@ -1517,16 +1613,11 @@ async def get_label_mappings(
                     'display_name': mapping['display_name'],
                     'description': mapping['description'],
                     'sort_order': mapping['sort_order'],
-                    'permissions': {
-                        'can_view': mapping['can_view'],
-                        'can_create': mapping['can_create'],
-                        'can_edit': mapping['can_edit'],
-                        'can_delete': mapping['can_delete']
-                    }
+                    'permissions': permission
                 })
-                
+
             return result
-            
+
     except Exception as e:
         logger.error(f"获取标签映射失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取标签映射失败: {str(e)}")
@@ -1540,35 +1631,51 @@ async def get_label_properties(
     current_user: dict = Depends(get_current_user)
 ):
     """获取指定标签的属性信息，基于用户标签权限过滤"""
+    logger.info(f"请求获取标签 {label_mapping_id} 的属性信息")
     try:
         conn = db_service.get_mysql_connection()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # 首先检查用户是否有该标签的查看权限
             permission_sql = """
-            SELECT can_view, can_edit FROM user_label_permissions 
+            SELECT can_view, can_edit FROM user_label_permissions
             WHERE label_mapping_id = %s AND user_role = %s
             """
             cursor.execute(permission_sql, (label_mapping_id, current_user['role']))
             label_permission = cursor.fetchone()
-            
-            if not label_permission or not label_permission['can_view']:
+
+            # 如果没有权限配置，管理员默认有所有权限
+            if not label_permission:
+                if current_user['role'] == 'admin':
+                    label_permission = {'can_view': True, 'can_edit': True}
+                else:
+                    label_permission = {'can_view': True, 'can_edit': False}
+            else:
+                # 确保权限值是布尔类型
+                label_permission['can_view'] = bool(label_permission['can_view'])
+                label_permission['can_edit'] = bool(label_permission['can_edit'])
+
+            if not label_permission['can_view']:
                 return {'properties': []}
             
             # 获取该标签的属性信息
             properties_sql = """
-            SELECT 
-                property_key, display_name, description, data_type, sort_order
-            FROM label_properties 
+            SELECT
+                property_key, display_name, description, data_type, sort_order, is_display
+            FROM label_properties
             WHERE label_mapping_id = %s AND is_display = TRUE
             ORDER BY sort_order, property_key
             """
             cursor.execute(properties_sql, (label_mapping_id,))
             properties = cursor.fetchall()
-            
+
+            # 确保数据类型正确
+            for prop in properties:
+                prop['is_display'] = bool(prop['is_display'])
+
             # 为每个属性添加权限信息
             for prop in properties:
                 prop['can_view'] = True  # 如果能查询到，说明有查看权限
-                prop['can_edit'] = label_permission['can_edit']  # 编辑权限基于标签权限
+                prop['can_edit'] = bool(label_permission['can_edit'])  # 编辑权限基于标签权限
             
             return {'properties': properties}
             
@@ -1763,6 +1870,674 @@ async def update_satisfaction_rating(
         raise HTTPException(status_code=500, detail=f"更新满意度评价失败: {str(e)}")
 
 
+
+# ==================== 用户管理API ====================
+
+@app.get("/api/users")
+async def get_users(
+    page: int = Query(1, ge=1, description="页码"),
+    size: int = Query(20, ge=1, le=100, description="每页数量"),
+    role: Optional[str] = Query(None, description="用户角色筛选"),
+    status: Optional[str] = Query(None, description="用户状态筛选"),
+    search: Optional[str] = Query(None, description="搜索关键词"),
+    current_user: dict = Depends(get_current_user)
+):
+    """获取用户列表（分页）"""
+    try:
+        conn = db_service.get_mysql_connection()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            # 构建查询条件
+            where_conditions = []
+            params = []
+
+            if status:
+                # 如果指定了status，则显示指定状态的用户
+                where_conditions.append("status = %s")
+                params.append(status)
+
+            if role:
+                where_conditions.append("role = %s")
+                params.append(role)
+
+            if search:
+                where_conditions.append("(username LIKE %s OR full_name LIKE %s OR email LIKE %s)")
+                params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+
+            where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+
+            # 查询总数
+            count_sql = f"SELECT COUNT(*) as total FROM user_neo4j {where_clause}"
+            cursor.execute(count_sql, params)
+            total = cursor.fetchone()["total"]
+
+            # 查询数据
+            offset = (page - 1) * size
+            sql = f"""
+            SELECT id, username, email, full_name, role, status, avatar_url, phone,
+                   department, position, last_login, login_count, created_at, updated_at
+            FROM user_neo4j
+            {where_clause}
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """
+            cursor.execute(sql, params + [size, offset])
+            users = cursor.fetchall()
+
+        conn.close()
+
+        return {
+            "items": users,
+            "total": total,
+            "page": page,
+            "size": size,
+            "pages": (total + size - 1) // size
+        }
+    except Exception as e:
+        logger.error(f"获取用户列表失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取用户列表失败: {str(e)}")
+
+@app.post("/api/users")
+async def create_user(
+    user_data: UserManagementCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """创建新用户"""
+    try:
+        # 检查当前用户权限（只有admin可以创建用户）
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            # 检查用户名和邮箱是否已存在
+            check_sql = "SELECT id FROM user_neo4j WHERE username = %s OR email = %s"
+            cursor.execute(check_sql, (user_data.username, user_data.email))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="用户名或邮箱已存在")
+
+            # 密码加密
+            password_hash = AuthService.get_password_hash(user_data.password)
+
+            # 插入新用户
+            sql = """
+            INSERT INTO user_neo4j (
+                username, email, password_hash, full_name, role,
+                department, position, phone, created_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(sql, (
+                user_data.username,
+                user_data.email,
+                password_hash,
+                user_data.full_name,
+                user_data.role,
+                user_data.department,
+                user_data.position,
+                user_data.phone,
+                current_user["id"]
+            ))
+            user_id = cursor.lastrowid
+            conn.commit()
+
+        conn.close()
+        return {"message": "用户创建成功", "user_id": user_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"创建用户失败: {e}")
+        raise HTTPException(status_code=500, detail=f"创建用户失败: {str(e)}")
+
+@app.put("/api/users/{user_id}")
+async def update_user(
+    user_id: int,
+    user_data: UserManagementUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """更新用户信息"""
+    try:
+        # 检查权限
+        if current_user.get("role") != "admin" and current_user["id"] != user_id:
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            # 构建更新字段
+            update_fields = []
+            params = []
+
+            if user_data.email is not None:
+                update_fields.append("email = %s")
+                params.append(user_data.email)
+
+            if user_data.full_name is not None:
+                update_fields.append("full_name = %s")
+                params.append(user_data.full_name)
+
+            if user_data.role is not None and current_user.get("role") == "admin":
+                update_fields.append("role = %s")
+                params.append(user_data.role)
+
+            if user_data.department is not None:
+                update_fields.append("department = %s")
+                params.append(user_data.department)
+
+            if user_data.position is not None:
+                update_fields.append("position = %s")
+                params.append(user_data.position)
+
+            if user_data.phone is not None:
+                update_fields.append("phone = %s")
+                params.append(user_data.phone)
+
+            if user_data.status is not None and current_user.get("role") == "admin":
+                update_fields.append("status = %s")
+                params.append(user_data.status)
+
+            update_fields.append("updated_at = NOW()")
+            params.append(user_id)
+
+            if update_fields:
+                sql = f"UPDATE user_neo4j SET {', '.join(update_fields)} WHERE id = %s"
+                cursor.execute(sql, params)
+                conn.commit()
+
+        conn.close()
+        return {"message": "用户信息更新成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"更新用户信息失败: {e}")
+        raise HTTPException(status_code=500, detail=f"更新用户信息失败: {str(e)}")
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """删除用户（硬删除）"""
+    try:
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        if current_user["id"] == user_id:
+            raise HTTPException(status_code=400, detail="不能删除自己的账号")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            # 先删除相关的权限数据
+            cursor.execute("DELETE FROM user_label_permissions WHERE user_role = (SELECT role FROM user_neo4j WHERE id = %s)", (user_id,))
+
+            # 硬删除用户
+            sql = "DELETE FROM user_neo4j WHERE id = %s"
+            cursor.execute(sql, (user_id,))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="用户不存在")
+            conn.commit()
+
+        conn.close()
+        return {"message": "用户删除成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除用户失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除用户失败: {str(e)}")
+
+# ==================== 标签映射管理API ====================
+
+@app.get("/api/labels")
+async def get_label_mappings(
+    type: Optional[str] = Query(None, description="标签类型：node/relationship"),
+    current_user: dict = Depends(get_current_user)
+):
+    """获取标签映射列表"""
+    try:
+        conn = db_service.get_mysql_connection()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            sql = """
+            SELECT id, type, neo4j_name, display_name, description,
+                   sort_order, is_active, created_at, updated_at
+            FROM label_mappings
+            """
+            params = []
+            if type:
+                sql += " WHERE type = %s"
+                params.append(type)
+
+            sql += " ORDER BY type, sort_order, display_name"
+            cursor.execute(sql, params)
+            labels = cursor.fetchall()
+
+            # 确保数据类型正确，特别是 is_active 字段
+            for label in labels:
+                # 将 tinyint 转换为布尔值
+                label['is_active'] = bool(label['is_active'])
+                # 确保日期时间格式正确
+                if label.get('created_at'):
+                    label['created_at'] = label['created_at'].isoformat()
+                if label.get('updated_at'):
+                    label['updated_at'] = label['updated_at'].isoformat()
+
+        conn.close()
+        return labels
+    except Exception as e:
+        logger.error(f"获取标签映射失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取标签映射失败: {str(e)}")
+
+@app.post("/api/labels")
+async def create_label_mapping(
+    label_data: LabelMappingCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """创建标签映射"""
+    try:
+        if current_user.get("role") not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            sql = """
+            INSERT INTO label_mappings (
+                type, neo4j_name, display_name, description,
+                sort_order, is_active
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(sql, (
+                label_data.type,
+                label_data.neo4j_name,
+                label_data.display_name,
+                label_data.description,
+                label_data.sort_order,
+                label_data.is_active
+            ))
+            label_id = cursor.lastrowid
+            conn.commit()
+
+        conn.close()
+        return {"message": "标签映射创建成功", "label_id": label_id}
+    except Exception as e:
+        logger.error(f"创建标签映射失败: {e}")
+        raise HTTPException(status_code=500, detail=f"创建标签映射失败: {str(e)}")
+
+@app.put("/api/labels/{label_id}")
+async def update_label_mapping(
+    label_id: int,
+    label_data: LabelMappingUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """更新标签映射"""
+    try:
+        if current_user.get("role") not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            update_fields = []
+            params = []
+
+            if label_data.display_name is not None:
+                update_fields.append("display_name = %s")
+                params.append(label_data.display_name)
+
+            if label_data.description is not None:
+                update_fields.append("description = %s")
+                params.append(label_data.description)
+
+            if label_data.sort_order is not None:
+                update_fields.append("sort_order = %s")
+                params.append(label_data.sort_order)
+
+            if label_data.is_active is not None:
+                update_fields.append("is_active = %s")
+                params.append(label_data.is_active)
+
+            update_fields.append("updated_at = NOW()")
+            params.append(label_id)
+
+            if update_fields:
+                sql = f"UPDATE label_mappings SET {', '.join(update_fields)} WHERE id = %s"
+                cursor.execute(sql, params)
+                conn.commit()
+
+        conn.close()
+        return {"message": "标签映射更新成功"}
+    except Exception as e:
+        logger.error(f"更新标签映射失败: {e}")
+        raise HTTPException(status_code=500, detail=f"更新标签映射失败: {str(e)}")
+
+@app.delete("/api/labels/{label_id}")
+async def delete_label_mapping(
+    label_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """删除标签映射"""
+    try:
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            sql = "DELETE FROM label_mappings WHERE id = %s"
+            cursor.execute(sql, (label_id,))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="标签映射不存在")
+            conn.commit()
+
+        conn.close()
+        return {"message": "标签映射删除成功"}
+    except Exception as e:
+        logger.error(f"删除标签映射失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除标签映射失败: {str(e)}")
+
+# ==================== 用户标签权限管理API ====================
+
+@app.get("/api/user-label-permissions")
+async def get_user_label_permissions(
+    role: Optional[str] = Query(None, description="用户角色"),
+    current_user: dict = Depends(get_current_user)
+):
+    """获取用户标签权限列表"""
+    try:
+        conn = db_service.get_mysql_connection()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            sql = """
+            SELECT p.*, l.type, l.neo4j_name, l.display_name as label_display_name
+            FROM user_label_permissions p
+            JOIN label_mappings l ON p.label_mapping_id = l.id
+            """
+            params = []
+            if role:
+                sql += " WHERE p.user_role = %s"
+                params.append(role)
+
+            sql += " ORDER BY p.user_role, l.type, l.display_name"
+            cursor.execute(sql, params)
+            permissions = cursor.fetchall()
+
+            # 确保数据类型正确
+            for permission in permissions:
+                # 将 tinyint 转换为布尔值
+                permission['can_view'] = bool(permission['can_view'])
+                permission['can_create'] = bool(permission['can_create'])
+                permission['can_edit'] = bool(permission['can_edit'])
+                permission['can_delete'] = bool(permission['can_delete'])
+
+        conn.close()
+        return permissions
+    except Exception as e:
+        logger.error(f"获取用户标签权限失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取用户标签权限失败: {str(e)}")
+
+@app.post("/api/user-label-permissions")
+async def create_user_label_permission(
+    permission_data: UserLabelPermissionCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """创建用户标签权限"""
+    try:
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            sql = """
+            INSERT INTO user_label_permissions (
+                user_role, label_mapping_id, can_view, can_create, can_edit, can_delete
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+            can_view = VALUES(can_view),
+            can_create = VALUES(can_create),
+            can_edit = VALUES(can_edit),
+            can_delete = VALUES(can_delete),
+            updated_at = NOW()
+            """
+            cursor.execute(sql, (
+                permission_data.user_role,
+                permission_data.label_mapping_id,
+                permission_data.can_view,
+                permission_data.can_create,
+                permission_data.can_edit,
+                permission_data.can_delete
+            ))
+            conn.commit()
+
+        conn.close()
+        return {"message": "用户标签权限设置成功"}
+    except Exception as e:
+        logger.error(f"创建用户标签权限失败: {e}")
+        raise HTTPException(status_code=500, detail=f"创建用户标签权限失败: {str(e)}")
+
+@app.put("/api/user-label-permissions/{permission_id}")
+async def update_user_label_permission(
+    permission_id: int,
+    permission_data: UserLabelPermissionUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """更新用户标签权限"""
+    try:
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            update_fields = []
+            params = []
+
+            if permission_data.can_view is not None:
+                update_fields.append("can_view = %s")
+                params.append(permission_data.can_view)
+
+            if permission_data.can_create is not None:
+                update_fields.append("can_create = %s")
+                params.append(permission_data.can_create)
+
+            if permission_data.can_edit is not None:
+                update_fields.append("can_edit = %s")
+                params.append(permission_data.can_edit)
+
+            if permission_data.can_delete is not None:
+                update_fields.append("can_delete = %s")
+                params.append(permission_data.can_delete)
+
+            update_fields.append("updated_at = NOW()")
+            params.append(permission_id)
+
+            if update_fields:
+                sql = f"UPDATE user_label_permissions SET {', '.join(update_fields)} WHERE id = %s"
+                cursor.execute(sql, params)
+                conn.commit()
+
+        conn.close()
+        return {"message": "用户标签权限更新成功"}
+    except Exception as e:
+        logger.error(f"更新用户标签权限失败: {e}")
+        raise HTTPException(status_code=500, detail=f"更新用户标签权限失败: {str(e)}")
+
+@app.delete("/api/user-label-permissions/{permission_id}")
+async def delete_user_label_permission(
+    permission_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """删除用户标签权限"""
+    try:
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            sql = "DELETE FROM user_label_permissions WHERE id = %s"
+            cursor.execute(sql, (permission_id,))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="权限记录不存在")
+            conn.commit()
+
+        conn.close()
+        return {"message": "用户标签权限删除成功"}
+    except Exception as e:
+        logger.error(f"删除用户标签权限失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除用户标签权限失败: {str(e)}")
+
+# ==================== 标签属性管理API ====================
+
+@app.get("/api/label-properties")
+async def get_label_properties(
+    label_id: Optional[int] = Query(None, description="标签映射ID"),
+    current_user: dict = Depends(get_current_user)
+):
+    """获取标签属性列表"""
+    try:
+        conn = db_service.get_mysql_connection()
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            sql = """
+            SELECT p.*, l.type, l.neo4j_name, l.display_name as label_display_name
+            FROM label_properties p
+            JOIN label_mappings l ON p.label_mapping_id = l.id
+            """
+            params = []
+            if label_id:
+                sql += " WHERE p.label_mapping_id = %s"
+                params.append(label_id)
+
+            sql += " ORDER BY p.label_mapping_id, p.sort_order, p.display_name"
+            cursor.execute(sql, params)
+            properties = cursor.fetchall()
+
+            # 确保数据类型正确
+            for prop in properties:
+                # 将 tinyint 转换为布尔值
+                prop['is_display'] = bool(prop['is_display'])
+                # 确保日期时间格式正确
+                if prop.get('created_at'):
+                    prop['created_at'] = prop['created_at'].isoformat()
+                if prop.get('updated_at'):
+                    prop['updated_at'] = prop['updated_at'].isoformat()
+
+        conn.close()
+        return properties
+    except Exception as e:
+        logger.error(f"获取标签属性失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取标签属性失败: {str(e)}")
+
+@app.post("/api/label-properties")
+async def create_label_property(
+    property_data: LabelPropertyCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """创建标签属性"""
+    try:
+        if current_user.get("role") not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            sql = """
+            INSERT INTO label_properties (
+                label_mapping_id, property_key, display_name, description,
+                data_type, sort_order, is_display
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(sql, (
+                property_data.label_mapping_id,
+                property_data.property_key,
+                property_data.display_name,
+                property_data.description,
+                property_data.data_type,
+                property_data.sort_order,
+                property_data.is_display
+            ))
+            property_id = cursor.lastrowid
+            conn.commit()
+
+        conn.close()
+        return {"message": "标签属性创建成功", "property_id": property_id}
+    except Exception as e:
+        logger.error(f"创建标签属性失败: {e}")
+        raise HTTPException(status_code=500, detail=f"创建标签属性失败: {str(e)}")
+
+@app.put("/api/label-properties/{property_id}")
+async def update_label_property(
+    property_id: int,
+    property_data: LabelPropertyUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """更新标签属性"""
+    try:
+        if current_user.get("role") not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            update_fields = []
+            params = []
+
+            if property_data.display_name is not None:
+                update_fields.append("display_name = %s")
+                params.append(property_data.display_name)
+
+            if property_data.description is not None:
+                update_fields.append("description = %s")
+                params.append(property_data.description)
+
+            if property_data.data_type is not None:
+                update_fields.append("data_type = %s")
+                params.append(property_data.data_type)
+
+            if property_data.sort_order is not None:
+                update_fields.append("sort_order = %s")
+                params.append(property_data.sort_order)
+
+            if property_data.is_display is not None:
+                update_fields.append("is_display = %s")
+                params.append(property_data.is_display)
+
+            update_fields.append("updated_at = NOW()")
+            params.append(property_id)
+
+            if update_fields:
+                sql = f"UPDATE label_properties SET {', '.join(update_fields)} WHERE id = %s"
+                cursor.execute(sql, params)
+                conn.commit()
+
+        conn.close()
+        return {"message": "标签属性更新成功"}
+    except Exception as e:
+        logger.error(f"更新标签属性失败: {e}")
+        raise HTTPException(status_code=500, detail=f"更新标签属性失败: {str(e)}")
+
+@app.delete("/api/label-properties/{property_id}")
+async def delete_label_property(
+    property_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """删除标签属性"""
+    try:
+        if current_user.get("role") not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="权限不足")
+
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            sql = "DELETE FROM label_properties WHERE id = %s"
+            cursor.execute(sql, (property_id,))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="标签属性不存在")
+            conn.commit()
+
+        conn.close()
+        return {"message": "标签属性删除成功"}
+    except Exception as e:
+        logger.error(f"删除标签属性失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除标签属性失败: {str(e)}")
+
+@app.get("/api/labels/types")
+async def get_label_types(current_user: dict = Depends(get_current_user)):
+    """获取标签类型列表"""
+    try:
+        return [
+            {"value": "node", "label": "节点标签"},
+            {"value": "relationship", "label": "关系标签"}
+        ]
+    except Exception as e:
+        logger.error(f"获取标签类型失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取标签类型失败: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

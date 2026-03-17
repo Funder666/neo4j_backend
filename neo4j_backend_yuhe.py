@@ -137,6 +137,7 @@ class UserResponse(BaseModel):
     full_name: Optional[str]
     role: str
     status: str
+    expires_at: Optional[datetime] = None
     last_login: Optional[datetime]
     created_at: datetime
 
@@ -209,6 +210,7 @@ class UserManagementCreate(BaseModel):
     department: Optional[str] = None
     position: Optional[str] = None
     phone: Optional[str] = None
+    expires_at: Optional[str] = None
 
 
 class UserManagementUpdate(BaseModel):
@@ -219,6 +221,7 @@ class UserManagementUpdate(BaseModel):
     position: Optional[str] = None
     phone: Optional[str] = None
     status: Optional[str] = None
+    expires_at: Optional[str] = None
 
 
 # 标签映射相关模型
@@ -354,6 +357,34 @@ class DatabaseService:
 # 用户认证服务
 class AuthService:
     @staticmethod
+    def parse_expires_at(expires_at: Optional[str]) -> Optional[datetime]:
+        if expires_at is None:
+            return None
+
+        expires_at = expires_at.strip()
+        if not expires_at:
+            return None
+
+        normalized = expires_at.replace("T", " ")
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(normalized, fmt)
+            except ValueError:
+                continue
+
+        raise HTTPException(
+            status_code=400,
+            detail="expires_at 格式错误，请使用 YYYY-MM-DD、YYYY-MM-DD HH:MM 或 YYYY-MM-DD HH:MM:SS"
+        )
+
+    @staticmethod
+    def is_user_expired(user: Optional[dict]) -> bool:
+        if not user:
+            return False
+        expires_at = user.get("expires_at")
+        return expires_at is not None and expires_at <= datetime.now()
+
+    @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         return pwd_context.verify(plain_password, hashed_password)
 
@@ -377,7 +408,7 @@ class AuthService:
         try:
             conn = db_service.get_mysql_connection()
             with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-                sql = "SELECT * FROM user_neo4j WHERE username = %s AND status = 'active'"
+                sql = "SELECT * FROM user_neo4j WHERE username = %s"
                 cursor.execute(sql, (username,))
                 user = cursor.fetchone()
             conn.close()
@@ -391,6 +422,14 @@ class AuthService:
         user = AuthService.get_user_by_username(username)
         if not user:
             logger.error(f"用户 {username} 不存在")
+            return False
+
+        if user.get('status') != 'active':
+            logger.error(f"用户 {username} 状态不是active")
+            return False
+
+        if AuthService.is_user_expired(user):
+            logger.error(f"用户 {username} 已过期，expires_at={user.get('expires_at')}")
             return False
 
         logger.info(f"尝试验证用户 {username} 的密码")
@@ -434,6 +473,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 
     user = AuthService.get_user_by_username(username)
     if user is None:
+        raise credentials_exception
+    if user.get("status") != "active":
+        raise credentials_exception
+    if AuthService.is_user_expired(user):
         raise credentials_exception
     return user
 
@@ -494,13 +537,47 @@ async def root():
 @app.post("/api/auth/login", response_model=Token)
 async def login(user_login: UserLogin):
     """用户登录"""
-    user = AuthService.authenticate_user(user_login.username, user_login.password)
+    user = AuthService.get_user_by_username(user_login.username)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if user.get("status") != "active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前用户已停用，无法登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if AuthService.is_user_expired(user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前用户已过期，无法登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not AuthService.verify_password(user_login.password, user['password_hash']):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            sql = """UPDATE user_neo4j
+                     SET last_login  = NOW(),
+                         login_count = login_count + 1
+                     WHERE id = %s"""
+            cursor.execute(sql, (user['id'],))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"更新登录信息失败: {e}")
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = AuthService.create_access_token(
@@ -514,6 +591,7 @@ async def login(user_login: UserLogin):
         full_name=user['full_name'],
         role=user['role'],
         status=user['status'],
+        expires_at=user.get('expires_at'),
         last_login=user['last_login'],
         created_at=user['created_at']
     )
@@ -536,6 +614,7 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
         full_name=current_user['full_name'],
         role=current_user['role'],
         status=current_user['status'],
+        expires_at=current_user.get('expires_at'),
         last_login=current_user['last_login'],
         created_at=current_user['created_at']
     )
@@ -1982,7 +2061,7 @@ async def get_users(
             offset = (page - 1) * size
             sql = f"""
             SELECT id, username, email, full_name, role, status, avatar_url, phone,
-                   department, position, last_login, login_count, created_at, updated_at
+                   department, position, expires_at, last_login, login_count, created_at, updated_at
             FROM user_neo4j
             {where_clause}
             ORDER BY created_at DESC
@@ -2026,12 +2105,13 @@ async def create_user(
 
             # 密码加密
             password_hash = AuthService.get_password_hash(user_data.password)
+            expires_at = AuthService.parse_expires_at(user_data.expires_at)
 
             # 插入新用户
             sql = """
                   INSERT INTO user_neo4j (username, email, password_hash, full_name, role, \
-                                          department, position, phone, created_by) \
-                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) \
+                                          department, position, phone, expires_at, created_by) \
+                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) \
                   """
             cursor.execute(sql, (
                 user_data.username,
@@ -2042,6 +2122,7 @@ async def create_user(
                 user_data.department,
                 user_data.position,
                 user_data.phone,
+                expires_at,
                 current_user["id"]
             ))
             user_id = cursor.lastrowid
@@ -2097,6 +2178,10 @@ async def update_user(
             if user_data.phone is not None:
                 update_fields.append("phone = %s")
                 params.append(user_data.phone)
+
+            if user_data.expires_at is not None:
+                update_fields.append("expires_at = %s")
+                params.append(AuthService.parse_expires_at(user_data.expires_at))
 
             if user_data.status is not None and current_user.get("role") == "admin":
                 update_fields.append("status = %s")

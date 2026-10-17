@@ -122,6 +122,17 @@ class UserLogin(BaseModel):
     password: str
 
 
+class UserRegister(BaseModel):
+    username: str
+    password: str
+    confirm_password: str
+    institution: str
+    identity_type: str
+    application_purpose: str
+    country_region: str
+    phone: Optional[str] = None
+
+
 class UserCreate(BaseModel):
     username: str
     email: EmailStr
@@ -133,8 +144,14 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     id: int
     username: str
-    email: str
+    email: Optional[str] = None
     full_name: Optional[str]
+    institution: Optional[str] = None
+    identity_type: Optional[str] = None
+    application_purpose: Optional[str] = None
+    country_region: Optional[str] = None
+    phone: Optional[str] = None
+    review_reason: Optional[str] = None
     role: str
     status: str
     expires_at: Optional[datetime] = None
@@ -203,10 +220,14 @@ class Token(BaseModel):
 # 用户管理相关模型
 class UserManagementCreate(BaseModel):
     username: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
     password: str
     full_name: Optional[str] = None
     role: Optional[str] = "user"
+    institution: Optional[str] = None
+    identity_type: Optional[str] = None
+    application_purpose: Optional[str] = None
+    country_region: Optional[str] = None
     department: Optional[str] = None
     position: Optional[str] = None
     phone: Optional[str] = None
@@ -217,11 +238,20 @@ class UserManagementUpdate(BaseModel):
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
     role: Optional[str] = None
+    institution: Optional[str] = None
+    identity_type: Optional[str] = None
+    application_purpose: Optional[str] = None
+    country_region: Optional[str] = None
     department: Optional[str] = None
     position: Optional[str] = None
     phone: Optional[str] = None
+    review_reason: Optional[str] = None
     status: Optional[str] = None
     expires_at: Optional[str] = None
+
+
+def get_provided_fields(model: BaseModel) -> set:
+    return getattr(model, "model_fields_set", getattr(model, "__fields_set__", set()))
 
 
 # 标签映射相关模型
@@ -545,10 +575,40 @@ async def login(user_login: UserLogin):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if user.get("status") != "active":
+    if user.get("status") == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="账号已提交申请，等待管理员审核",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") == "rejected":
+        review_reason = (user.get("review_reason") or "").strip()
+        detail = f"账号审核未通过：{review_reason}" if review_reason else "账号审核未通过，请联系管理员"
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") == "inactive":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="当前用户已停用，无法登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") == "suspended":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前用户已暂停，无法登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") != "active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前用户状态异常，无法登录",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -569,10 +629,10 @@ async def login(user_login: UserLogin):
     try:
         conn = db_service.get_mysql_connection()
         with conn.cursor() as cursor:
-            sql = """UPDATE user_neo4j
-                     SET last_login  = NOW(),
-                         login_count = login_count + 1
-                     WHERE id = %s"""
+            sql = """UPDATE user_neo4j SET
+                    last_login = NOW(),
+                    login_count = login_count + 1
+                    WHERE id = %s"""
             cursor.execute(sql, (user['id'],))
             conn.commit()
         conn.close()
@@ -587,12 +647,18 @@ async def login(user_login: UserLogin):
     user_response = UserResponse(
         id=user['id'],
         username=user['username'],
-        email=user['email'],
-        full_name=user['full_name'],
+        email=user.get('email'),
+        full_name=user.get('full_name'),
+        institution=user.get('institution'),
+        identity_type=user.get('identity_type'),
+        application_purpose=user.get('application_purpose'),
+        country_region=user.get('country_region'),
+        phone=user.get('phone'),
+        review_reason=user.get('review_reason'),
         role=user['role'],
         status=user['status'],
         expires_at=user.get('expires_at'),
-        last_login=user['last_login'],
+        last_login=user.get('last_login'),
         created_at=user['created_at']
     )
 
@@ -604,18 +670,90 @@ async def login(user_login: UserLogin):
     }
 
 
+@app.post("/api/auth/register")
+async def register(user_data: UserRegister):
+    """公开注册账号，提交后等待管理员审核"""
+    identity_options = {"教师", "学生", "研究人员", "机构管理员", "开发者", "其他"}
+
+    username = user_data.username.strip()
+    institution = user_data.institution.strip()
+    identity_type = user_data.identity_type.strip()
+    application_purpose = user_data.application_purpose.strip()
+    country_region = user_data.country_region.strip()
+    phone = user_data.phone.strip() if user_data.phone else None
+
+    if len(username) < 3 or len(username) > 50:
+        raise HTTPException(status_code=400, detail="账号长度需在 3 到 50 个字符之间")
+    if len(user_data.password) < 6:
+        raise HTTPException(status_code=400, detail="密码长度不能少于 6 个字符")
+    if user_data.password != user_data.confirm_password:
+        raise HTTPException(status_code=400, detail="两次输入的密码不一致")
+    if not institution:
+        raise HTTPException(status_code=400, detail="请填写所在机构")
+    if identity_type not in identity_options:
+        raise HTTPException(status_code=400, detail="请选择有效身份")
+    if not application_purpose:
+        raise HTTPException(status_code=400, detail="请填写申请账号目的")
+    if len(application_purpose) > 500:
+        raise HTTPException(status_code=400, detail="申请账号目的不能超过 500 个字符")
+    if not country_region:
+        raise HTTPException(status_code=400, detail="请填写所属国家和地区")
+
+    conn = None
+    try:
+        conn = db_service.get_mysql_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT id FROM user_neo4j WHERE username = %s", (username,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="账号已存在")
+
+            password_hash = AuthService.get_password_hash(user_data.password)
+            sql = """
+            INSERT INTO user_neo4j (
+                username, email, password_hash, full_name, institution, identity_type,
+                application_purpose, country_region, role, status, phone
+            ) VALUES (%s, NULL, %s, NULL, %s, %s, %s, %s, 'user', 'pending', %s)
+            """
+            cursor.execute(sql, (
+                username,
+                password_hash,
+                institution,
+                identity_type,
+                application_purpose,
+                country_region,
+                phone
+            ))
+            conn.commit()
+
+        return {"message": "注册申请已提交，请等待管理员审核"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"注册申请失败: {e}")
+        raise HTTPException(status_code=500, detail=f"注册申请失败: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.get("/api/auth/me", response_model=UserResponse)
 async def get_current_user_info(current_user: dict = Depends(get_current_user)):
     """获取当前用户信息"""
     return UserResponse(
         id=current_user['id'],
         username=current_user['username'],
-        email=current_user['email'],
-        full_name=current_user['full_name'],
+        email=current_user.get('email'),
+        full_name=current_user.get('full_name'),
+        institution=current_user.get('institution'),
+        identity_type=current_user.get('identity_type'),
+        application_purpose=current_user.get('application_purpose'),
+        country_region=current_user.get('country_region'),
+        phone=current_user.get('phone'),
+        review_reason=current_user.get('review_reason'),
         role=current_user['role'],
         status=current_user['status'],
         expires_at=current_user.get('expires_at'),
-        last_login=current_user['last_login'],
+        last_login=current_user.get('last_login'),
         created_at=current_user['created_at']
     )
 
@@ -631,13 +769,24 @@ async def logout(current_user: dict = Depends(get_current_user)):
 @app.get("/api/health")
 async def health_check():
     """健康检查"""
+    mysql_status = "unknown"
     try:
-        with db_service.get_neo4j_session() as session:
-            result = session.run("RETURN 1 as test")
-            record = result.single()
-            return {"status": "healthy", "database": "connected"}
+        conn = db_service.get_mysql_connection()
+        conn.close()
+        mysql_status = "connected"
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"数据库连接异常: {str(e)}")
+        logger.error(f"MySQL健康检查失败: {e}")
+        raise HTTPException(status_code=500, detail=f"MySQL连接异常: {str(e)}")
+
+    neo4j_status = "configured"
+    if db_service and not db_service.neo4j_driver:
+        neo4j_status = "disconnected"
+
+    return {
+        "status": "healthy",
+        "mysql": mysql_status,
+        "neo4j": neo4j_status
+    }
 
 
 # Neo4j数据操作API (需要认证)
@@ -1945,7 +2094,7 @@ async def update_label_properties(
                       VALUES (display_name), description = \
                       VALUES (description), data_type = \
                       VALUES (data_type), sort_order = \
-                      VALUES (sort_oørder), is_display = \
+                      VALUES (sort_order), is_display = \
                       VALUES (is_display) \
                       """
                 cursor.execute(sql, (
@@ -2022,15 +2171,18 @@ async def update_satisfaction_rating(
 
 @app.get("/api/users")
 async def get_users(
-        page: int = Query(1, ge=1, description="页码"),
-        size: int = Query(20, ge=1, le=100, description="每页数量"),
-        role: Optional[str] = Query(None, description="用户角色筛选"),
-        status: Optional[str] = Query(None, description="用户状态筛选"),
-        search: Optional[str] = Query(None, description="搜索关键词"),
-        current_user: dict = Depends(get_current_user)
+    page: int = Query(1, ge=1, description="页码"),
+    size: int = Query(20, ge=1, le=100, description="每页数量"),
+    role: Optional[str] = Query(None, description="用户角色筛选"),
+    status: Optional[str] = Query(None, description="用户状态筛选"),
+    search: Optional[str] = Query(None, description="搜索关键词"),
+    current_user: dict = Depends(get_current_user)
 ):
     """获取用户列表（分页）"""
     try:
+        if current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="权限不足")
+
         conn = db_service.get_mysql_connection()
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             # 构建查询条件
@@ -2047,8 +2199,8 @@ async def get_users(
                 params.append(role)
 
             if search:
-                where_conditions.append("(username LIKE %s OR full_name LIKE %s OR email LIKE %s)")
-                params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+                where_conditions.append("(username LIKE %s OR full_name LIKE %s OR email LIKE %s OR institution LIKE %s OR country_region LIKE %s)")
+                params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
 
             where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
 
@@ -2060,8 +2212,10 @@ async def get_users(
             # 查询数据
             offset = (page - 1) * size
             sql = f"""
-            SELECT id, username, email, full_name, role, status, avatar_url, phone,
-                   department, position, expires_at, last_login, login_count, created_at, updated_at
+            SELECT id, username, email, full_name, institution, identity_type,
+                   application_purpose, country_region, review_reason, role, status, avatar_url, phone,
+                   department, position, expires_at, last_login, login_count,
+                   created_at, updated_at, reviewed_by, reviewed_at
             FROM user_neo4j
             {where_clause}
             ORDER BY created_at DESC
@@ -2079,6 +2233,8 @@ async def get_users(
             "size": size,
             "pages": (total + size - 1) // size
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"获取用户列表失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取用户列表失败: {str(e)}")
@@ -2086,8 +2242,8 @@ async def get_users(
 
 @app.post("/api/users")
 async def create_user(
-        user_data: UserManagementCreate,
-        current_user: dict = Depends(get_current_user)
+    user_data: UserManagementCreate,
+    current_user: dict = Depends(get_current_user)
 ):
     """创建新用户"""
     try:
@@ -2098,8 +2254,12 @@ async def create_user(
         conn = db_service.get_mysql_connection()
         with conn.cursor() as cursor:
             # 检查用户名和邮箱是否已存在
-            check_sql = "SELECT id FROM user_neo4j WHERE username = %s OR email = %s"
-            cursor.execute(check_sql, (user_data.username, user_data.email))
+            if user_data.email:
+                check_sql = "SELECT id FROM user_neo4j WHERE username = %s OR email = %s"
+                cursor.execute(check_sql, (user_data.username, user_data.email))
+            else:
+                check_sql = "SELECT id FROM user_neo4j WHERE username = %s"
+                cursor.execute(check_sql, (user_data.username,))
             if cursor.fetchone():
                 raise HTTPException(status_code=400, detail="用户名或邮箱已存在")
 
@@ -2109,20 +2269,27 @@ async def create_user(
 
             # 插入新用户
             sql = """
-                  INSERT INTO user_neo4j (username, email, password_hash, full_name, role, \
-                                          department, position, phone, expires_at, created_by) \
-                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) \
-                  """
+            INSERT INTO user_neo4j (
+                username, email, password_hash, full_name, institution, identity_type,
+                application_purpose, country_region, role, status,
+                department, position, phone, expires_at, created_by, reviewed_by, reviewed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s, %s, %s, %s, %s, %s, NOW())
+            """
             cursor.execute(sql, (
                 user_data.username,
                 user_data.email,
                 password_hash,
                 user_data.full_name,
+                user_data.institution,
+                user_data.identity_type,
+                user_data.application_purpose,
+                user_data.country_region,
                 user_data.role,
                 user_data.department,
                 user_data.position,
                 user_data.phone,
                 expires_at,
+                current_user["id"],
                 current_user["id"]
             ))
             user_id = cursor.lastrowid
@@ -2139,53 +2306,114 @@ async def create_user(
 
 @app.put("/api/users/{user_id}")
 async def update_user(
-        user_id: int,
-        user_data: UserManagementUpdate,
-        current_user: dict = Depends(get_current_user)
+    user_id: int,
+    user_data: UserManagementUpdate,
+    current_user: dict = Depends(get_current_user)
 ):
     """更新用户信息"""
     try:
         # 检查权限
-        if current_user.get("role") != "admin" and current_user["id"] != user_id:
+        is_admin = current_user.get("role") == "admin"
+        if not is_admin and current_user["id"] != user_id:
             raise HTTPException(status_code=403, detail="权限不足")
 
         conn = db_service.get_mysql_connection()
-        with conn.cursor() as cursor:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT id, status FROM user_neo4j WHERE id = %s", (user_id,))
+            existing_user = cursor.fetchone()
+            if not existing_user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
             # 构建更新字段
             update_fields = []
             params = []
+            provided_fields = get_provided_fields(user_data)
 
-            if user_data.email is not None:
+            if "email" in provided_fields:
                 update_fields.append("email = %s")
                 params.append(user_data.email)
 
-            if user_data.full_name is not None:
+            if "full_name" in provided_fields:
                 update_fields.append("full_name = %s")
                 params.append(user_data.full_name)
 
-            if user_data.role is not None and current_user.get("role") == "admin":
+            if "role" in provided_fields:
+                if not is_admin:
+                    raise HTTPException(status_code=403, detail="只有管理员可以修改用户角色")
+                if not user_data.role:
+                    raise HTTPException(status_code=400, detail="用户角色不能为空")
                 update_fields.append("role = %s")
                 params.append(user_data.role)
 
-            if user_data.department is not None:
+            if "institution" in provided_fields:
+                update_fields.append("institution = %s")
+                params.append(user_data.institution)
+
+            if "identity_type" in provided_fields:
+                update_fields.append("identity_type = %s")
+                params.append(user_data.identity_type)
+
+            if "application_purpose" in provided_fields:
+                update_fields.append("application_purpose = %s")
+                params.append(user_data.application_purpose)
+
+            if "country_region" in provided_fields:
+                update_fields.append("country_region = %s")
+                params.append(user_data.country_region)
+
+            if "department" in provided_fields:
                 update_fields.append("department = %s")
                 params.append(user_data.department)
 
-            if user_data.position is not None:
+            if "position" in provided_fields:
                 update_fields.append("position = %s")
                 params.append(user_data.position)
 
-            if user_data.phone is not None:
+            if "phone" in provided_fields:
                 update_fields.append("phone = %s")
                 params.append(user_data.phone)
 
-            if user_data.expires_at is not None:
+            if "expires_at" in provided_fields:
+                if not is_admin:
+                    raise HTTPException(status_code=403, detail="只有管理员可以修改用户有效期")
                 update_fields.append("expires_at = %s")
                 params.append(AuthService.parse_expires_at(user_data.expires_at))
 
-            if user_data.status is not None and current_user.get("role") == "admin":
+            if "status" in provided_fields:
+                if not is_admin:
+                    raise HTTPException(status_code=403, detail="只有管理员可以修改用户状态")
+                valid_statuses = {"pending", "active", "inactive", "suspended", "rejected"}
+                if user_data.status not in valid_statuses:
+                    raise HTTPException(status_code=400, detail="无效的用户状态")
                 update_fields.append("status = %s")
                 params.append(user_data.status)
+                if user_data.status == "active" and existing_user.get("status") == "pending":
+                    update_fields.append("reviewed_by = %s")
+                    params.append(current_user["id"])
+                    update_fields.append("reviewed_at = NOW()")
+                    update_fields.append("review_reason = NULL")
+                elif user_data.status == "active":
+                    update_fields.append("review_reason = NULL")
+                elif user_data.status == "rejected":
+                    review_reason = (user_data.review_reason or "").strip()
+                    if not review_reason:
+                        raise HTTPException(status_code=400, detail="请填写不通过理由")
+                    if len(review_reason) > 500:
+                        raise HTTPException(status_code=400, detail="不通过理由不能超过 500 个字符")
+                    update_fields.append("review_reason = %s")
+                    params.append(review_reason)
+                    if existing_user.get("status") == "pending":
+                        update_fields.append("reviewed_by = %s")
+                        params.append(current_user["id"])
+                        update_fields.append("reviewed_at = NOW()")
+            elif "review_reason" in provided_fields:
+                if not is_admin:
+                    raise HTTPException(status_code=403, detail="只有管理员可以修改审核理由")
+                review_reason = (user_data.review_reason or "").strip()
+                if len(review_reason) > 500:
+                    raise HTTPException(status_code=400, detail="不通过理由不能超过 500 个字符")
+                update_fields.append("review_reason = %s")
+                params.append(review_reason or None)
 
             update_fields.append("updated_at = NOW()")
             params.append(user_id)
@@ -2206,8 +2434,8 @@ async def update_user(
 
 @app.delete("/api/users/{user_id}")
 async def delete_user(
-        user_id: int,
-        current_user: dict = Depends(get_current_user)
+    user_id: int,
+    current_user: dict = Depends(get_current_user)
 ):
     """删除用户（硬删除）"""
     try:
@@ -2219,12 +2447,7 @@ async def delete_user(
 
         conn = db_service.get_mysql_connection()
         with conn.cursor() as cursor:
-            # 先删除相关的权限数据
-            cursor.execute(
-                "DELETE FROM user_label_permissions WHERE user_role = (SELECT role FROM user_neo4j WHERE id = %s)",
-                (user_id,))
-
-            # 硬删除用户
+            # 权限配置按角色共享，删除单个用户时不能删除角色权限。
             sql = "DELETE FROM user_neo4j WHERE id = %s"
             cursor.execute(sql, (user_id,))
             if cursor.rowcount == 0:

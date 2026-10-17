@@ -53,7 +53,7 @@ NEO4J_PASSWORD = "xtxzhu2u"
 neo4j_driver = None
 
 # 阿里云DashScope API配置
-DASHSCOPE_API_KEY = "sk-f55b7b2a02a4478fbdcb48c30d90bb49"
+DASHSCOPE_API_KEY = "sk-938360e28c53407da73f7c87727e755b"
 DASHSCOPE_API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
 # MySQL数据库配置
@@ -178,7 +178,7 @@ class AuthService:
         try:
             conn = db_service.get_mysql_connection()
             with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-                sql = "SELECT * FROM user_neo4j WHERE username = %s AND status = 'active'"
+                sql = "SELECT * FROM user_neo4j WHERE username = %s"
                 cursor.execute(sql, (username,))
                 user = cursor.fetchone()
             conn.close()
@@ -186,6 +186,19 @@ class AuthService:
         except Exception as e:
             logger.error(f"获取用户失败: {e}")
             return None
+
+    @staticmethod
+    def verify_password(plain_password: str, hashed_password: str) -> bool:
+        """验证bcrypt密码哈希"""
+        return pwd_context.verify(plain_password, hashed_password)
+
+    @staticmethod
+    def is_user_expired(user: Optional[dict]) -> bool:
+        """检查用户是否已过期"""
+        if not user:
+            return False
+        expires_at = user.get("expires_at")
+        return expires_at is not None and expires_at <= datetime.now()
 
     @staticmethod
     def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
@@ -199,44 +212,69 @@ class AuthService:
         encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
         return encoded_jwt
 
-# 简单的用户数据库（用于测试）
-TEST_USERS_DB = {
-    "admin": {
-        "username": "admin",
-        "password": "admin2025.",  # 明文密码，实际应用中应该使用hash
-        "role": "admin"
-    },
-    "guest": {
-        "username": "guest",
-        "password": "guest",
-        "role": "user"
-    }
-}
-
-def verify_password(plain_password: str, stored_password: str) -> bool:
-    """验证密码（简单版本，实际应用中应该使用hash验证）"""
-    return plain_password == stored_password
-
-def get_user_by_username(username: str):
-    """根据用户名获取用户信息"""
-    return TEST_USERS_DB.get(username)
-
 # 登录接口
 @app.post("/out/api/auth/login")
 async def login(user_login: dict):
     """用户登录"""
-    user = get_user_by_username(user_login.get("username"))
+    username = (user_login.get("username") or "").strip()
+    password = user_login.get("password") or ""
+
+    user = AuthService.get_user_by_username(username)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户名不存在",
+            detail="用户名或密码错误",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not verify_password(user_login.get("password"), user["password"]):
+    if not AuthService.verify_password(password, user["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="密码错误",
+            detail="用户名或密码错误",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") == "pending":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="账号已提交申请，等待管理员审核",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") == "rejected":
+        review_reason = (user.get("review_reason") or "").strip()
+        detail = f"账号审核未通过：{review_reason}" if review_reason else "账号审核未通过，请联系管理员"
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") == "inactive":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前用户已停用，无法登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") == "suspended":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前用户已暂停，无法登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if user.get("status") != "active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前用户状态异常，无法登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if AuthService.is_user_expired(user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="当前用户已过期，无法登录",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -250,9 +288,10 @@ async def login(user_login: dict):
         "token_type": "bearer",
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "user": {
-            "id": 1,
+            "id": user["id"],
             "username": user["username"],
-            "role": user["role"]
+            "role": user["role"],
+            "status": user["status"]
         }
     }
 
@@ -273,8 +312,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except jwt.PyJWTError:
         raise credentials_exception
 
-    user = get_user_by_username(username)
+    user = AuthService.get_user_by_username(username)
     if user is None:
+        raise credentials_exception
+    if user.get("status") != "active":
+        raise credentials_exception
+    if AuthService.is_user_expired(user):
         raise credentials_exception
     return user
 
